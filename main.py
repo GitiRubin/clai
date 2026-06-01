@@ -7,7 +7,7 @@ from pathlib import Path
 import gradio as gr
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 load_dotenv()
 
@@ -31,7 +31,9 @@ SHELLS = {
             "- list files → dir\n"
             "- find python files containing TODO → findstr /s /m TODO *.py\n"
             "- show running processes → tasklist\n"
-            "- show network configuration → ipconfig /all"
+            "- show network configuration → ipconfig /all\n"
+            "- compress the Logs folder into logs.zip → tar -a -c -f logs.zip Logs\n"
+            "- download https://example.com/file.zip → curl https://example.com/file.zip -o file.zip"
         ),
     },
     "powershell": {
@@ -41,7 +43,9 @@ SHELLS = {
             "- list files → Get-ChildItem\n"
             "- find python files containing TODO → Get-ChildItem -Recurse -Filter *.py | Select-String TODO\n"
             "- show running processes → Get-Process\n"
-            "- show network configuration → Get-NetIPConfiguration"
+            "- show network configuration → Get-NetIPConfiguration\n"
+            "- compress the Logs folder into logs.zip → Compress-Archive -Path Logs -DestinationPath logs.zip\n"
+            "- download https://example.com/file.zip → Invoke-WebRequest https://example.com/file.zip -OutFile file.zip"
         ),
     },
     "bash": {
@@ -51,7 +55,9 @@ SHELLS = {
             "- list files → ls -la\n"
             "- find python files containing TODO → grep -rn TODO --include=*.py\n"
             "- show running processes → ps aux\n"
-            "- show network configuration → ip addr"
+            "- show network configuration → ip addr\n"
+            "- compress the Logs folder into logs.zip → zip -r logs.zip Logs\n"
+            "- download https://example.com/file.zip → curl https://example.com/file.zip -o file.zip"
         ),
     },
 }
@@ -79,19 +85,31 @@ def nl_to_command(
 ):
     """Convert natural language to a shell command.
 
+    Stateless model fallback: tries the chosen model first, then the rest of
+    MODELS in order if it returns a transient 503 (overloaded). Each request
+    always starts from the user's choice — the previous request's outcome is
+    not remembered.
+
     Returns (command, raw_response) so the UI can show debug details.
     """
     system_instruction = build_system_instruction(system_prompt, shell_key)
-    response = client.models.generate_content(
-        model=model,
-        contents=user_input,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            max_output_tokens=1024,
-            thinking_config=types.ThinkingConfig(thinking_budget=512),
-        ),
-    )
-    return (response.text or "").strip(), response
+    chain = [model] + [m for m in MODELS if m != model]
+    last_exc = None
+    for candidate in chain:
+        try:
+            response = client.models.generate_content(
+                model=candidate,
+                contents=user_input,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    max_output_tokens=1024,
+                    thinking_config=types.ThinkingConfig(thinking_budget=512),
+                ),
+            )
+            return (response.text or "").strip(), response
+        except errors.ServerError as exc:  # 503 / overloaded → try next model
+            last_exc = exc
+    raise last_exc  # every model in the chain was unavailable
 
 
 def generate(user_input: str, system_prompt: str, model: str, shell_key: str):
