@@ -33,7 +33,8 @@ SHELLS = {
             "- show running processes → tasklist\n"
             "- show network configuration → ipconfig /all\n"
             "- compress the Logs folder into logs.zip → tar -a -c -f logs.zip Logs\n"
-            "- download https://example.com/file.zip → curl https://example.com/file.zip -o file.zip"
+            "- download https://example.com/file.zip → curl https://example.com/file.zip -o file.zip\n"
+            "- show the 10 largest files under the current directory → dir /s /a-d /o-s"
         ),
     },
     "powershell": {
@@ -112,57 +113,63 @@ def nl_to_command(
     raise last_exc  # every model in the chain was unavailable
 
 
-def generate(user_input: str, system_prompt: str, model: str, shell_key: str):
+def generate(user_input: str, model: str, shell_key: str):
     """UI wrapper: never raises — surfaces errors in the output instead."""
     if not user_input.strip():
-        return "", "Enter a request first."
+        return "# Type what you want to do above, then press Generate."
     try:
-        command, response = nl_to_command(user_input, system_prompt, model, shell_key)
-        debug = response.model_dump_json(indent=2, exclude_none=True)
-        return command, debug
+        command, _ = nl_to_command(user_input, BASE_PROMPT, model, shell_key)
+        return command
     except Exception as exc:  # show the failure in the UI instead of crashing
-        return f"⚠️ {type(exc).__name__}: {exc}", ""
+        return f"# ⚠️ {type(exc).__name__}: {exc}"
+
+
+CSS = """
+.gradio-container { max-width: 760px !important; margin: auto !important; }
+#title { text-align: center; }
+#title h1 { margin-bottom: 0; font-size: 2.2rem; }
+footer { display: none !important; }
+"""
 
 
 def build_ui() -> gr.Blocks:
     shell_choices = [(v["label"], k) for k, v in SHELLS.items()]
 
-    with gr.Blocks(title="clai — NL → shell command") as demo:
-        gr.Markdown("# clai\nNatural language → shell command. Tweak the model and prompt to test.")
+    with gr.Blocks(title="clai — NL → shell command", theme=gr.themes.Soft(), css=CSS) as demo:
+        gr.Markdown(
+            "# 🖥️ clai\n"
+            "### Describe what you want — get the exact shell command.\n",
+            elem_id="title",
+        )
+
+        user_input = gr.Textbox(
+            label="What do you want to do?",
+            placeholder="e.g. list all files modified in the last 7 days",
+            lines=2,
+            autofocus=True,
+        )
 
         with gr.Row():
-            with gr.Column(scale=2):
-                user_input = gr.Textbox(
-                    label="Request",
-                    placeholder="list all files modified in the last 7 days",
-                    lines=2,
-                )
-                with gr.Row():
-                    model = gr.Dropdown(MODELS, value=MODELS[0], label="Model")
-                    shell = gr.Dropdown(shell_choices, value=detect_shell(), label="Target shell")
-                run_btn = gr.Button("Generate command", variant="primary")
-                command_out = gr.Code(label="Generated command", language="shell")
+            shell = gr.Dropdown(shell_choices, value=detect_shell(), label="🐚 Shell")
+            model = gr.Dropdown(MODELS, value=MODELS[0], label="🤖 Model")
 
-            with gr.Column(scale=1):
-                system_prompt = gr.Textbox(
-                    label="Base prompt (editable — shell + examples are appended automatically)",
-                    value=BASE_PROMPT,
-                    lines=10,
-                )
+        run_btn = gr.Button("✨ Generate command", variant="primary", size="lg")
 
-        with gr.Accordion("Raw API response (debug)", open=False):
-            debug_out = gr.Code(label="response", language="json")
+        command_out = gr.Code(label="Your command — copy & run", language="shell")
 
-        run_btn.click(
-            generate,
-            inputs=[user_input, system_prompt, model, shell],
-            outputs=[command_out, debug_out],
+        gr.Examples(
+            examples=[
+                "what is my public IP",
+                "find all python files containing TODO",
+                "show the 10 largest files in this folder",
+                "compress the Logs folder into logs.zip",
+            ],
+            inputs=user_input,
+            label="Try an example",
         )
-        user_input.submit(
-            generate,
-            inputs=[user_input, system_prompt, model, shell],
-            outputs=[command_out, debug_out],
-        )
+
+        run_btn.click(generate, inputs=[user_input, model, shell], outputs=command_out)
+        user_input.submit(generate, inputs=[user_input, model, shell], outputs=command_out)
 
     return demo
 
